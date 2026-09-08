@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  msUserId           String   @unique
+  email              String   @unique
+  username           String   @unique // kept for reference/display; no longer used for a public page
+  displayName        String
+  refreshTokenEnc    String?  // encrypted MS refresh token
+  refreshTokenStatus String   @default("valid") // valid | revoked
+  bufferMinutes      Int      @default(10) // manual safety-margin suggestion in the UI
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  bookingTypes      BookingType[]
+  organizedBookings Booking[]
+}
+
+model AllowedEmail {
+  id      String   @id @default(cuid())
+  email   String   @unique
+  addedAt DateTime @default(now())
+}
+
+// Optional duration presets the organizer can quick-pick when creating a
+// booking (e.g. "30-min call"). Not required - the new-booking form also
+// accepts a custom duration.
+model BookingType {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  durationMinutes Int
+  label           String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Booking {
+  id              String   @id @default(cuid())
+  organizerUserId String
+  organizer       User     @relation(fields: [organizerUserId], references: [id])
+  subject         String
+  note            String?
+  startTime       DateTime // stored UTC
+  endTime         DateTime // stored UTC
+
+  // Internal attendees: team members with connected calendars, checked for
+  // conflicts before booking. Stored as JSON - small, denormalized list,
+  // read/written as a whole, no per-attendee querying needed.
+  // Shape: [{ "userId": "...", "email": "...", "displayName": "..." }]
+  internalAttendees Json
+
+  // External attendees: not on Microsoft, never calendar-checked. Organizer
+  // has already confirmed the time with them some other way (call/email/
+  // Slack) before entering it here.
+  // Shape: [{ "name": "...", "email": "..." }]
+  externalAttendees Json
+
+  msEventId            String?   // Graph event id, for cancel
+  status               String    @default("confirmed") // confirmed | cancelled
+  cancelToken          String    @unique // lets an external attendee self-cancel
+  cancelTokenUsedAt    DateTime? // via their emailed link, without pinging the organizer
+  cancelTokenExpiresAt DateTime
+  createdAt            DateTime  @default(now())
+
+  @@index([organizerUserId])
+  @@index([cancelToken])
+}
+
+// NOTE: Prisma doesn't support partial unique indexes in the schema DSL.
+// After `prisma db push`, run prisma/manual-migrations/001_partial_unique_slot.sql
+// to add a backstop against an organizer accidentally double-booking the
+// same start time twice (e.g. a double-click or two open tabs):
+//   CREATE UNIQUE INDEX uniq_organizer_confirmed_slot
+//   ON "Booking" ("organizerUserId", "startTime")
+//   WHERE status = 'confirmed';
